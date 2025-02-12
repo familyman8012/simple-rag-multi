@@ -6,6 +6,7 @@ from embedding_cache import EmbeddingCache
 import google.generativeai as genai
 from dotenv import load_dotenv
 from category_config import CategoryConfig
+import re
 
 # .env 파일 로드
 load_dotenv()
@@ -131,24 +132,43 @@ class QASystem:
 
         # 참조 문서 정보 구성
         references = []
+        seen_docs = set()  # 중복 문서 제거를 위한 세트
+        
         for chunk in similar_chunks:
             doc = self.get_document(chunk["document_id"])
-            if doc:
-                references.append(
-                    {
-                        "title": doc["title"],
-                        "category": doc["category"],
-                        "chunk_index": chunk["chunk_index"],
-                        "similarity": chunk["similarity"],
-                        "content": (
-                            chunk["content"][:200] + "..."
-                            if len(chunk["content"]) > 200
-                            else chunk["content"]
-                        ),
-                    }
-                )
+            if doc and doc["id"] not in seen_docs:
+                seen_docs.add(doc["id"])
+                # 섹션 제목 추출 (있는 경우)
+                section_title = ""
+                content = chunk["content"]
+                if "\n" in content:
+                    first_line = content.split("\n")[0]
+                    if any(re.match(pattern, first_line) for pattern in [
+                        r'^#{1,6}\s+(.+)$',  # Markdown 헤더
+                        r'^([A-Z][^.!?]*):$',  # 콜론으로 끝나는 대문자 시작 텍스트
+                        r'^\d+\.\s+([^.!?]+)$',  # 숫자로 시작하는 목록
+                    ]):
+                        section_title = first_line
+                
+                references.append({
+                    "title": doc["title"],
+                    "category": doc["category"],
+                    "section": section_title if section_title else "문서 본문",
+                    "similarity": f"{chunk['similarity']:.2%}",  # 유사도를 퍼센트로 표시
+                    "preview": (
+                        content[:100] + "..."  # 미리보기는 100자로 제한
+                        if len(content) > 100
+                        else content
+                    ),
+                })
 
-        return {"answer": answer, "documents": references}
+        # 유사도 순으로 정렬
+        references.sort(key=lambda x: float(x["similarity"].rstrip("%")), reverse=True)
+
+        return {
+            "answer": answer,
+            "documents": references[:3]  # 상위 3개 문서만 표시
+        }
 
     def _create_embedding(self, text: str) -> List[float]:
         """

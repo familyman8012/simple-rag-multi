@@ -87,78 +87,118 @@ class DocumentLoader:
         with open(file_path, 'r', encoding='utf-8') as f:
             return f.read()
 
+    def _extract_sections(self, text: str) -> List[Dict[str, Any]]:
+        """
+        텍스트에서 섹션을 추출
+        Args:
+            text: 원본 텍스트
+        Returns:
+            섹션 리스트 (각 섹션은 제목과 내용을 포함)
+        """
+        # 일반적인 섹션 헤더 패턴
+        section_patterns = [
+            r'^#{1,6}\s+(.+)$',  # Markdown 헤더
+            r'^([A-Z][^.!?]*):$',  # 콜론으로 끝나는 대문자 시작 텍스트
+            r'^\d+\.\s+([^.!?]+)$',  # 숫자로 시작하는 목록
+            r'^[A-Z][^.!?]*\n[-=]+$',  # 밑줄로 강조된 텍스트
+        ]
+        
+        lines = text.split('\n')
+        sections = []
+        current_section = {'title': '', 'content': []}
+        
+        for line in lines:
+            is_header = False
+            for pattern in section_patterns:
+                if re.match(pattern, line):
+                    if current_section['content']:
+                        sections.append(current_section)
+                        current_section = {'title': '', 'content': []}
+                    current_section['title'] = line
+                    is_header = True
+                    break
+            
+            if not is_header:
+                current_section['content'].append(line)
+        
+        if current_section['content']:
+            sections.append(current_section)
+        
+        return sections
+
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """
+        텍스트를 문장 단위로 분할
+        Args:
+            text: 분할할 텍스트
+        Returns:
+            문장 리스트
+        """
+        # 문장 종료 패턴
+        sentence_endings = r'[.!?][\'")\]]* *'
+        
+        # 약어와 특수 케이스 처리
+        abbreviations = r'(?<!Mr)(?<!Mrs)(?<!Dr)(?<!Prof)(?<!Sr)(?<!Jr)'
+        
+        # 문장 분할
+        pattern = f'{abbreviations}{sentence_endings}'
+        sentences = re.split(pattern, text)
+        
+        # 빈 문장 제거 및 정리
+        sentences = [s.strip() for s in sentences if s.strip()]
+        return sentences
+
     def _split_text(self, text: str) -> List[str]:
         """
-        텍스트를 청크로 분할
+        텍스트를 의미 기반으로 청크 분할
         Args:
             text: 분할할 텍스트
         Returns:
             청크 리스트
         """
-        # 줄바꿈과 문장 부호를 기준으로 분할
-        text = re.sub(r'\n\s*\n', '\n', text)  # 빈 줄 제거
-        sentences = []
-        
-        # 문단 단위로 먼저 분할
-        paragraphs = text.split('\n')
-        for paragraph in paragraphs:
-            # 문장 단위로 분할
-            para_sentences = re.split(r'(?<=[.!?])\s*(?=[A-Z가-힣])', paragraph.strip())
-            sentences.extend([s.strip() for s in para_sentences if s.strip()])
+        # 1. 섹션 추출
+        sections = self._extract_sections(text)
         
         chunks = []
-        current_chunk = ""
+        current_chunk = []
+        current_length = 0
         
-        for sentence in sentences:
-            # 문장이 너무 길면 단어 단위로 추가 분할
-            if len(sentence) > self.chunk_size:
-                words = sentence.split()
-                temp_sentence = ""
-                for word in words:
-                    if len(temp_sentence) + len(word) + 1 <= self.chunk_size:
-                        temp_sentence += word + " "
-                    else:
-                        if current_chunk:
-                            chunks.append(current_chunk.strip())
-                        current_chunk = temp_sentence.strip()
-                        temp_sentence = word + " "
-                sentence = temp_sentence
+        for section in sections:
+            # 섹션 제목 처리
+            if section['title']:
+                if current_chunk and current_length > 0:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                current_chunk.append(section['title'])
+                current_length += len(section['title'])
             
-            # 현재 청크에 문장을 추가할 수 있는지 확인
-            if len(current_chunk) + len(sentence) + 1 <= self.chunk_size:
-                current_chunk += sentence + " "
-            else:
-                # 현재 청크가 있으면 저장
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = sentence + " "
+            # 섹션 내용을 문장 단위로 분할
+            content_text = '\n'.join(section['content'])
+            sentences = self._split_into_sentences(content_text)
+            
+            for sentence in sentences:
+                # 현재 청크가 너무 커지면 새 청크 시작
+                if current_length + len(sentence) > self.chunk_size:
+                    if current_chunk:
+                        chunks.append('\n'.join(current_chunk))
+                        # 중복을 위해 마지막 일부 문장 유지
+                        overlap_size = 0
+                        overlap_chunk = []
+                        for s in reversed(current_chunk):
+                            if overlap_size + len(s) <= self.chunk_overlap:
+                                overlap_chunk.insert(0, s)
+                                overlap_size += len(s)
+                            else:
+                                break
+                        current_chunk = overlap_chunk
+                        current_length = sum(len(s) for s in current_chunk)
+                
+                current_chunk.append(sentence)
+                current_length += len(sentence)
         
         # 마지막 청크 처리
         if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        # 청크 간 중복 처리
-        if self.chunk_overlap > 0 and len(chunks) > 1:
-            overlapped_chunks = []
-            for i in range(len(chunks)):
-                if i == 0:
-                    overlapped_chunks.append(chunks[i])
-                else:
-                    # 이전 청크의 끝부분을 현재 청크의 시작 부분에 추가
-                    prev_chunk = chunks[i-1]
-                    current_chunk = chunks[i]
-                    
-                    # 문장 단위로 중복되도록 조정
-                    overlap_sentences = re.split(r'(?<=[.!?])\s*(?=[A-Z가-힣])', prev_chunk[-self.chunk_overlap:])
-                    if overlap_sentences:
-                        overlap_text = overlap_sentences[-1]
-                        if len(overlap_text) + len(current_chunk) <= self.chunk_size:
-                            overlapped_chunks.append(overlap_text + " " + current_chunk)
-                        else:
-                            overlapped_chunks.append(current_chunk)
-                    else:
-                        overlapped_chunks.append(current_chunk)
-            
-            chunks = overlapped_chunks
+            chunks.append('\n'.join(current_chunk))
         
         return chunks

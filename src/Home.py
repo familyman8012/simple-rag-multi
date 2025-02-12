@@ -55,7 +55,11 @@ def main():
                 st.markdown("---")
                 st.markdown("**참고 문서:**")
                 for ref in qa["references"]:
-                    st.markdown(f"- {ref['title']} (유사도: {ref['similarity']:.2f})")
+                    with st.expander(f"📄 {ref['title']} ({ref['similarity']})"):
+                        st.markdown(f"**섹션**: {ref.get('section', '문서 본문')}")
+                        st.markdown(f"**카테고리**: {ref['category']}")
+                        st.markdown("**관련 내용 미리보기**:")
+                        st.markdown(f">{ref.get('preview', ref.get('content', ''))}")
     
     # 새로운 질문 입력
     question = st.chat_input("문서에 대해 질문해 보세요")
@@ -75,12 +79,15 @@ def main():
                     # 답변 표시
                     st.write(result["answer"])
                     
-                    # 참조 문서 정보 표시
+                    # 참고 문서 정보 표시
                     if result.get("documents"):
-                        st.markdown("---")
-                        st.markdown("**참고 문서:**")
+                        st.markdown("### 참고 문서")
                         for doc in result["documents"]:
-                            st.markdown(f"- {doc['title']} (유사도: {doc['similarity']:.2f})")
+                            with st.expander(f"📄 {doc['title']} ({doc['similarity']})"):
+                                st.markdown(f"**섹션**: {doc['section']}")
+                                st.markdown(f"**카테고리**: {doc['category']}")
+                                st.markdown("**관련 내용 미리보기**:")
+                                st.markdown(f">{doc['preview']}")
                     
                     # 대화 내역에 추가
                     st.session_state.chat_history.append({
