@@ -1,10 +1,14 @@
-from typing import List, Dict, Any, Optional
-from openai import OpenAI
-from db import VectorStore
-from category_config import CategoryConfig
-from embedding_cache import EmbeddingCache
 import os
+from typing import List, Dict, Any, Optional
+from db import VectorStore
+from openai import OpenAI
+from embedding_cache import EmbeddingCache
+import google.generativeai as genai
+from dotenv import load_dotenv
+from category_config import CategoryConfig
 
+# .env 파일 로드
+load_dotenv()
 
 class QASystem:
     def __init__(self):
@@ -17,6 +21,24 @@ class QASystem:
         # OpenAI API 키 확인
         if not os.environ.get("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY가 환경변수에 설정되어 있어야 합니다.")
+            
+        # Gemini API 키 확인 및 설정
+        if not os.environ.get("GEMINI_API_KEY"):
+            raise ValueError("GEMINI_API_KEY가 환경변수에 설정되어 있어야 합니다.")
+        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+        
+        # Gemini 모델 초기화
+        generation_config = {
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+        }
+        self.gemini_model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            generation_config=generation_config,
+        )
+        self.chat_session = None
 
     def add_documents(
         self, chunks: List[Dict[str, Any]], metadata: Dict[str, Any] = None
@@ -101,7 +123,7 @@ class QASystem:
         # 컨텍스트 구성
         context = "\n\n".join([chunk["content"] for chunk in similar_chunks])
 
-        # GPT를 사용하여 답변 생성
+        # Gemini를 사용하여 답변 생성
         answer = self._create_chat_completion(
             "주어진 컨텍스트를 기반으로 질문에 답변해주세요. 컨텍스트에 없는 내용은 답변하지 마세요.",
             f"컨텍스트:\n{context}\n\n질문: {question}",
@@ -110,8 +132,7 @@ class QASystem:
         # 참조 문서 정보 구성
         references = []
         for chunk in similar_chunks:
-            doc_id = chunk["doc_id"]
-            doc = self.get_document(doc_id)
+            doc = self.get_document(chunk["document_id"])
             if doc:
                 references.append(
                     {
@@ -138,13 +159,22 @@ class QASystem:
 
     def _create_chat_completion(self, system_prompt: str, user_prompt: str) -> str:
         """
-        ChatGPT를 사용하여 답변 생성
+        Gemini를 사용하여 답변 생성
         """
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+        # 새로운 채팅 세션 시작
+        self.chat_session = self.gemini_model.start_chat(
+            history=[
+                {
+                    "role": "user",
+                    "parts": ["당신은 문서 기반 질의응답 시스템입니다. " + system_prompt],
+                },
+                {
+                    "role": "model",
+                    "parts": ["네, 이해했습니다. 주어진 컨텍스트를 기반으로 정확하게 답변하도록 하겠습니다."],
+                },
+            ]
         )
-        return response.choices[0].message.content
+        
+        # 질문 전송 및 답변 받기
+        response = self.chat_session.send_message(user_prompt)
+        return response.text
